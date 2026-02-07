@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ const (
 	flushInterval = 2 * time.Second // Интервал опустошения буфера
 )
 
-// Кольцевой буфер
+// RingBuffer - Кольцевой буфер
 type RingBuffer struct {
 	data  []int
 	start int
@@ -50,7 +51,7 @@ func (rb *RingBuffer) GetAll() []int {
 
 	var result []int
 	if !rb.full && rb.start == rb.end {
-		return result // пустой
+		return result
 	}
 
 	if rb.full {
@@ -63,7 +64,6 @@ func (rb *RingBuffer) GetAll() []int {
 	} else {
 		result = append(result, rb.data[rb.start:rb.end]...)
 	}
-	// После получения очищаем буфер
 	rb.start = 0
 	rb.end = 0
 	rb.full = false
@@ -71,13 +71,17 @@ func (rb *RingBuffer) GetAll() []int {
 }
 
 func main() {
+	// Настройка логирования в консоль
+	log.SetOutput(os.Stdout)
+	log.Println("[SYSTEM] Пайплайн запущен")
+
 	inputChan := make(chan int)
 	filteredChan := make(chan int)
 	bufferChan := make(chan int)
 
 	var wg sync.WaitGroup
 
-	// Источник данных
+	// 1. Источник данных
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -89,46 +93,51 @@ func main() {
 			}
 			text := strings.TrimSpace(scanner.Text())
 			if strings.ToLower(text) == "exit" {
+				log.Println("[SOURCE] Получена команда выхода")
 				close(inputChan)
 				break
 			}
 			num, err := strconv.Atoi(text)
 			if err != nil {
-				fmt.Println("Это не число. Попробуйте ещё раз.")
+				log.Printf("[SOURCE] Ошибка ввода: '%s' не является числом\n", text)
 				continue
 			}
+			log.Printf("[SOURCE] Принято число: %d\n", num)
 			inputChan <- num
 		}
 	}()
 
-	// Фильтр отрицательных
+	// 2. Фильтр отрицательных
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for num := range inputChan {
 			if num >= 0 {
+				log.Printf("[FILTER < 0] Число %d прошло проверку\n", num)
 				filteredChan <- num
+			} else {
+				log.Printf("[FILTER < 0] Число %d отфильтровано (отрицательное)\n", num)
 			}
-			// отрицательные игнорируем
 		}
 		close(filteredChan)
 	}()
 
-	// Фильтр кратных 3 (кроме 0)
+	// 3. Фильтр кратных 3 (кроме 0)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for num := range filteredChan {
 			if num != 0 && num%3 == 0 {
-				// пропускаем
+				log.Printf("[FILTER %3] Число %d отфильтровано (кратно 3)\n", num)
 				continue
 			}
+			log.Printf("[FILTER %3] Число %d прошло проверку\n", num)
 			bufferChan <- num
 		}
 		close(bufferChan)
 	}()
 
-	// Кольцевой буфер и его опустошение
+	// 4. Кольцевой буфер и его опустошение
 	ringBuffer := NewRingBuffer(bufferSize)
 	wg.Add(1)
 	go func() {
@@ -140,22 +149,21 @@ func main() {
 			select {
 			case num, ok := <-bufferChan:
 				if !ok {
-					// канал закрыт, опустошить буфер
+					log.Println("[BUFFER] Входной канал закрыт, финальная очистка...")
 					items := ringBuffer.GetAll()
-					if len(items) > 0 {
-						for _, v := range items {
-							fmt.Printf("Получены данные: %d\n", v)
-						}
+					for _, v := range items {
+						fmt.Printf("РЕЗУЛЬТАТ: %d\n", v)
 					}
 					return
 				}
+				log.Printf("[BUFFER] Число %d добавлено в буфер\n", num)
 				ringBuffer.Put(num)
 			case <-ticker.C:
-				// опустошение буфера
 				items := ringBuffer.GetAll()
 				if len(items) > 0 {
+					log.Printf("[BUFFER] Опустошение буфера (%d элементов)\n", len(items))
 					for _, v := range items {
-						fmt.Printf("Получены данные: %d\n", v)
+						fmt.Printf("РЕЗУЛЬТАТ: %d\n", v)
 					}
 				}
 			}
@@ -163,5 +171,5 @@ func main() {
 	}()
 
 	wg.Wait()
-	fmt.Println("Конвейер завершен.")
+	log.Println("[SYSTEM] Пайплайн успешно завершен")
 }
